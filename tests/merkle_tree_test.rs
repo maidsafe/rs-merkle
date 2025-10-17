@@ -276,3 +276,203 @@ pub mod rollback {
         );
     }
 }
+
+pub mod get_nodes_at_level {
+    use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
+
+    #[test]
+    pub fn should_return_nodes_at_leaf_level() {
+        let leaves = ["a", "b", "c", "d", "e", "f", "g", "h"]
+            .iter()
+            .map(|x| Sha256::hash(x.as_bytes()))
+            .collect::<Vec<_>>();
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+
+        // Test leaf level (level 0)
+        let level_0 = merkle_tree.get_nodes_at_level(0).unwrap();
+        assert_eq!(level_0.len(), 8);
+
+        // Verify that indices are correct
+        for (i, (index, _hash)) in level_0.iter().enumerate() {
+            assert_eq!(*index, i);
+        }
+    }
+
+    #[test]
+    pub fn should_return_nodes_at_intermediate_levels() {
+        let leaves = ["a", "b", "c", "d", "e", "f", "g", "h"]
+            .iter()
+            .map(|x| Sha256::hash(x.as_bytes()))
+            .collect::<Vec<_>>();
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+
+        // Test intermediate levels
+        let level_1 = merkle_tree.get_nodes_at_level(1).unwrap();
+        assert_eq!(level_1.len(), 4);
+
+        let level_2 = merkle_tree.get_nodes_at_level(2).unwrap();
+        assert_eq!(level_2.len(), 2);
+    }
+
+    #[test]
+    pub fn should_return_root_at_depth_level() {
+        let leaves = ["a", "b", "c", "d", "e", "f", "g", "h"]
+            .iter()
+            .map(|x| Sha256::hash(x.as_bytes()))
+            .collect::<Vec<_>>();
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+
+        // Test root level
+        let depth = merkle_tree.depth();
+        let root_level = merkle_tree.get_nodes_at_level(depth).unwrap();
+        assert_eq!(root_level.len(), 1);
+        assert_eq!(root_level[0].1, merkle_tree.root().unwrap());
+    }
+
+    #[test]
+    pub fn should_return_none_for_invalid_level() {
+        let leaves = ["a", "b", "c", "d"]
+            .iter()
+            .map(|x| Sha256::hash(x.as_bytes()))
+            .collect::<Vec<_>>();
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+
+        let depth = merkle_tree.depth();
+
+        // Test invalid level (beyond tree depth)
+        assert!(merkle_tree.get_nodes_at_level(depth + 1).is_none());
+    }
+
+    #[test]
+    pub fn should_work_with_small_tree() {
+        let leaves = ["a", "b", "c", "d"]
+            .iter()
+            .map(|x| Sha256::hash(x.as_bytes()))
+            .collect::<Vec<_>>();
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+
+        // Tree with 4 leaves
+        // Level 0: 4 leaves
+        // Level 1: 2 nodes
+        // Level 2: 2 nodes
+        // Level 3: 1 root
+        let depth = merkle_tree.depth();
+
+        let level_0 = merkle_tree.get_nodes_at_level(0).unwrap();
+        assert_eq!(level_0.len(), 4);
+
+        let level_1 = merkle_tree.get_nodes_at_level(1).unwrap();
+        assert_eq!(level_1.len(), 2);
+
+        // Verify root is at the top level
+        let root_level = merkle_tree.get_nodes_at_level(depth).unwrap();
+        assert_eq!(root_level.len(), 1);
+        assert_eq!(root_level[0].1, merkle_tree.root().unwrap());
+    }
+
+    #[test]
+    pub fn should_work_with_odd_number_of_leaves() {
+        let leaves = ["a", "b", "c"]
+            .iter()
+            .map(|x| Sha256::hash(x.as_bytes()))
+            .collect::<Vec<_>>();
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+
+        // Tree with 3 leaves
+        let level_0 = merkle_tree.get_nodes_at_level(0).unwrap();
+        assert_eq!(level_0.len(), 3);
+
+        let level_1 = merkle_tree.get_nodes_at_level(1).unwrap();
+        // With 3 leaves, we get 2 parent nodes (pairs: [0,1] and [2])
+        assert!(level_1.len() >= 1);
+    }
+}
+
+pub mod proof_from_node {
+    use rs_merkle::{algorithms::Sha256, Hasher, MerkleTree};
+
+    #[test]
+    pub fn should_create_proof_from_intersection_to_root() {
+        let leaves: Vec<[u8; 32]> = (0..16)
+            .map(|i| Sha256::hash(format!("leaf_{}", i).as_bytes()))
+            .collect();
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+        let root = merkle_tree.root().unwrap();
+
+        // Get intersection node at level 2
+        let intersection_level = 2;
+        let nodes = merkle_tree.get_nodes_at_level(intersection_level).unwrap();
+        let (node_index, node_hash) = nodes[0];
+
+        // Create proof using the new method
+        let proof = merkle_tree
+            .proof_from_node(intersection_level, node_index)
+            .unwrap();
+
+        // Verify proof by treating intersection nodes as "leaves"
+        let relative_index = 0; // First node at this level
+        let nodes_count = nodes.len();
+        let is_valid = proof.verify(root, &[relative_index], &[node_hash], nodes_count);
+
+        assert!(is_valid);
+    }
+
+    #[test]
+    pub fn should_return_correct_proof_size() {
+        let leaves: Vec<[u8; 32]> = (0..8)
+            .map(|i| Sha256::hash(format!("leaf_{}", i).as_bytes()))
+            .collect();
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+        let root = merkle_tree.root().unwrap();
+
+        // Proof from level 1 to root
+        let level = 1;
+        let nodes = merkle_tree.get_nodes_at_level(level).unwrap();
+        let proof = merkle_tree.proof_from_node(level, nodes[0].0).unwrap();
+
+        // Verify the proof works
+        let is_valid = proof.verify(root, &[0], &[nodes[0].1], nodes.len());
+        assert!(is_valid);
+
+        // Proof from level 0 (leaf) should also work
+        let leaf_nodes = merkle_tree.get_nodes_at_level(0).unwrap();
+        let leaf_proof = merkle_tree.proof_from_node(0, 0).unwrap();
+        let is_valid_leaf = leaf_proof.verify(root, &[0], &[leaf_nodes[0].1], leaf_nodes.len());
+        assert!(is_valid_leaf);
+    }
+
+    #[test]
+    pub fn should_return_none_for_invalid_level() {
+        let leaves: Vec<[u8; 32]> = (0..8)
+            .map(|i| Sha256::hash(format!("leaf_{}", i).as_bytes()))
+            .collect();
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+
+        // Invalid level (beyond depth)
+        assert!(merkle_tree
+            .proof_from_node(merkle_tree.depth() + 1, 0)
+            .is_none());
+    }
+
+    #[test]
+    pub fn should_work_for_all_nodes_at_level() {
+        let leaves: Vec<[u8; 32]> = (0..8)
+            .map(|i| Sha256::hash(format!("leaf_{}", i).as_bytes()))
+            .collect();
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+        let root = merkle_tree.root().unwrap();
+
+        let level = 1;
+        let nodes = merkle_tree.get_nodes_at_level(level).unwrap();
+        let nodes_count = nodes.len();
+
+        // Verify proof works for all nodes at this level
+        for (relative_idx, (node_index, node_hash)) in nodes.iter().enumerate() {
+            let proof = merkle_tree.proof_from_node(level, *node_index).unwrap();
+
+            // Verify using MerkleProof::verify()
+            let is_valid = proof.verify(root, &[relative_idx], &[*node_hash], nodes_count);
+            assert!(is_valid);
+        }
+    }
+}

@@ -465,6 +465,118 @@ impl<T: Hasher> MerkleTree<T> {
         self.layer_tuples().len() - 1
     }
 
+    /// Returns all nodes at a specific level of the tree.
+    ///
+    /// # Arguments
+    ///
+    /// * `level` - The level to retrieve (0 = leaves, depth = root)
+    ///
+    /// # Returns
+    ///
+    /// A vector of tuples containing (index, hash) for each node at the level,
+    /// or None if the level is invalid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rs_merkle::{MerkleTree, algorithms::Sha256, Hasher};
+    ///
+    /// let leaves = vec![
+    ///     Sha256::hash(b"a"),
+    ///     Sha256::hash(b"b"),
+    ///     Sha256::hash(b"c"),
+    ///     Sha256::hash(b"d"),
+    /// ];
+    /// let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+    ///
+    /// // Get nodes at level 1 (one level above leaves)
+    /// if let Some(nodes) = merkle_tree.get_nodes_at_level(1) {
+    ///     println!("Level 1 has {} nodes", nodes.len());
+    /// }
+    /// ```
+    pub fn get_nodes_at_level(&self, level: usize) -> Option<Vec<(usize, T::Hash)>> {
+        let layers = self.layer_tuples();
+        layers.get(level).cloned()
+    }
+
+    /// Creates a proof from a node at a specific level up to the root.
+    ///
+    /// This is useful for creating intersection proofs or proving that an intermediate
+    /// node belongs to the tree without going all the way down to the leaves.
+    ///
+    /// # Arguments
+    ///
+    /// * `level` - The level of the node (0 = leaves, depth = root)
+    /// * `node_index` - The index of the node at that level
+    ///
+    /// # Returns
+    ///
+    /// A MerkleProof that can be used to verify the node belongs to the tree,
+    /// or None if the level/index is invalid.
+    ///
+    /// To verify the proof, treat the nodes at the given level as "leaves" of a smaller tree:
+    /// - Use the node's relative position at its level as the leaf index
+    /// - Use the node's hash as the leaf hash
+    /// - Use the total number of nodes at that level as the total leaves count
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rs_merkle::{MerkleTree, algorithms::Sha256, Hasher};
+    ///
+    /// let leaves: Vec<[u8; 32]> = (0..16)
+    ///     .map(|i| Sha256::hash(format!("leaf_{}", i).as_bytes()))
+    ///     .collect();
+    /// let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+    /// let root = merkle_tree.root().unwrap();
+    ///
+    /// // Get an intersection node at level 2
+    /// let intersection_level = 2;
+    /// let nodes = merkle_tree.get_nodes_at_level(intersection_level).unwrap();
+    /// let (node_index, node_hash) = nodes[0];
+    ///
+    /// // Create a proof from this node to the root
+    /// let proof = merkle_tree.proof_from_node(intersection_level, node_index).unwrap();
+    ///
+    /// // Verify by treating intersection nodes as "leaves"
+    /// let nodes_count = nodes.len();
+    /// let relative_index = 0; // First node at this level
+    /// let is_valid = proof.verify(root, &[relative_index], &[node_hash], nodes_count);
+    /// assert!(is_valid);
+    /// ```
+    pub fn proof_from_node(&self, level: usize, node_index: usize) -> Option<MerkleProof<T>> {
+        if level > self.depth() {
+            return None;
+        }
+
+        let mut proof_hashes = Vec::new();
+        let mut current_index = node_index;
+
+        // Collect sibling hashes from the given level up to (but not including) the root
+        for current_level in level..self.depth() {
+            let nodes_at_level = self.layer_tuples().get(current_level)?;
+
+            // Calculate sibling index
+            let sibling_index = if current_index % 2 == 0 {
+                current_index + 1
+            } else {
+                current_index - 1
+            };
+
+            // Find the sibling node
+            if let Some((_, sibling_hash)) =
+                nodes_at_level.iter().find(|(idx, _)| *idx == sibling_index)
+            {
+                proof_hashes.push(*sibling_hash);
+            }
+
+            // Move to parent index
+            current_index /= 2;
+        }
+
+        Some(MerkleProof::new(proof_hashes))
+    }
+
     /// Returns a copy of the tree leaves - the base level of the tree.
     ///
     /// ### Examples
